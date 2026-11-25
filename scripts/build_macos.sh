@@ -3,19 +3,21 @@ set -euo pipefail
 
 # Hobbits macOS one-shot builder (Apple Silicon/Intel)
 # - Installs Homebrew if missing
-# - Installs deps: qt@5, cmake, libusb, pkg-config, python (for build)
+# - Installs host tools only. The CMake superbuild downloads and builds
+#   Qt 6.8.3, libusb, and libpcap; do not point CMake at Homebrew Qt 5.
 # - Configures and builds Hobbits
-# - Stages plugins into the app bundle default path
+# - Installs so plugins and Qt are staged into the app bundle
 # - Creates a DMG for distribution
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
-APP_DIR="$BUILD_DIR/bin/hobbits.app"
+INSTALL_DIR="$BUILD_DIR/install"
+APP_DIR="$INSTALL_DIR/hobbits.app"
 APP_BIN="$APP_DIR/Contents/MacOS/hobbits"
 APP_PLUGINS="$APP_DIR/Contents/PlugIns/hobbits"
 DMG_NAME="hobbits-macos.dmg"
 
-echo "[1/8] Checking Homebrew"
+echo "[1/6] Checking Homebrew"
 if ! command -v brew >/dev/null 2>&1; then
   echo "Homebrew not found. Installing..."
   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -26,38 +28,55 @@ if ! command -v brew >/dev/null 2>&1; then
   fi
 fi
 
-echo "[2/8] Ensuring build dependencies"
+echo "[2/6] Ensuring host build tools"
 brew bundle --file=- <<'BREWFILE'
 brew "cmake"
-brew "pkg-config"
-brew "qt@5"
-brew "libusb"
+brew "ninja"
+brew "perl"
 brew "python@3.13"
 brew "create-dmg"
 BREWFILE
 
-echo "[3/8] Environment for Qt"
-export CMAKE_PREFIX_PATH="$(brew --prefix qt@5)"
+if ! command -v make >/dev/null 2>&1; then
+  echo "ERROR: make is required (install Xcode Command Line Tools)" >&2
+  exit 1
+fi
 
-echo "[4/8] Init submodules"
-git submodule update --init --recursive
+echo "[3/6] Configure"
+cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-echo "[5/8] Configure + Build"
-cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
-cmake --build "$BUILD_DIR" -j
+echo "[4/6] Build"
+# Outer parallelism is the number of dependency projects. Each one uses
+# HOBBITS_DEPENDENCY_JOBS (default 4). Match upstream's CI choice.
+cmake --build "$BUILD_DIR" --parallel 2
 
-echo "[6/8] Stage plugins into app bundle"
-mkdir -p "$APP_PLUGINS"
-rsync -a "$BUILD_DIR/plugins/" "$APP_PLUGINS/"
+echo "[5/6] Install (stages plugins and Qt into the app bundle)"
+cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
 
-echo "[7/8] Verify app binary exists"
+echo "[6/6] Verify bundle and create DMG"
 if [[ ! -x "$APP_BIN" ]]; then
   echo "ERROR: App binary not found at $APP_BIN" >&2
   exit 1
 fi
+if [[ ! -d "$APP_DIR/Contents/Frameworks" ]]; then
+  echo "ERROR: Qt frameworks were not deployed to $APP_DIR/Contents/Frameworks" >&2
+  exit 1
+fi
+if [[ ! -d "$APP_PLUGINS" ]]; then
+  echo "ERROR: Plugins directory not found at $APP_PLUGINS" >&2
+  exit 1
+fi
+plugin_count="$(find "$APP_PLUGINS" -type f -name '*.dylib' | wc -l | tr -d ' ')"
+if [[ "${plugin_count}" -eq 0 ]]; then
+  echo "ERROR: No plugins staged at $APP_PLUGINS" >&2
+  exit 1
+fi
 
-echo "[8/8] Create DMG"
+DMG_SRC="$BUILD_DIR/dmg-src"
 DMG_OUT="$BUILD_DIR/$DMG_NAME"
+rm -rf "$DMG_SRC"
+mkdir -p "$DMG_SRC"
+cp -R "$APP_DIR" "$DMG_SRC/"
 rm -f "$DMG_OUT"
 create-dmg \
   --volname "Hobbits" \
@@ -66,6 +85,6 @@ create-dmg \
   --icon-size 96 \
   --app-drop-link 425 200 \
   "$DMG_OUT" \
-  "$BUILD_DIR/bin"
+  "$DMG_SRC"
 
 echo "Done. DMG created at: $DMG_OUT"
