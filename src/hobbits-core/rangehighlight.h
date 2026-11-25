@@ -2,6 +2,7 @@
 #define RANGEHIGHLIGHT_H
 
 #include <QString>
+#include <QStringList>
 #include "range.h"
 #include "hobbits-core_global.h"
 
@@ -31,8 +32,8 @@ public:
     QList<RangeHighlight> allDescendants() const;
     QStringList tags() const;
 
-    friend QDataStream& operator<<(QDataStream&, const RangeHighlight&);
-    friend QDataStream& operator>>(QDataStream&, RangeHighlight&);
+    friend HOBBITSCORESHARED_EXPORT QDataStream& operator<<(QDataStream&, const RangeHighlight&);
+    friend HOBBITSCORESHARED_EXPORT QDataStream& operator>>(QDataStream&, RangeHighlight&);
 
 private:
     QString m_category;
